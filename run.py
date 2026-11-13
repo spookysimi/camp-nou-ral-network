@@ -13,7 +13,7 @@ import time
 
 import numpy as np
 
-from pipeline import config, labels, load, submission
+from pipeline import config, labels, load, state_machine, submission
 
 
 def step(number, title):
@@ -67,10 +67,13 @@ def main():
         players_seen[first_stop:second_start].mean()))
 
     # 3. Label ------------------------------------------------------------------------------
-    step(3, "Label every frame (version v0 = baseline_smooth50)")
+    step(3, "Label every frame (version {})".format(config.LABELER))
     t = time.time()
-    predicted = labels.predict(tracking)
+    predicted, stats = labels.predict(tracking, return_stats=True)
     print("  {} labels in {:.1f} s".format(len(predicted), time.time() - t))
+    if stats:
+        for line in state_machine.describe_v1(predicted, stats):
+            print("  " + line)
 
     # 4. Write and validate -----------------------------------------------------------------
     step(4, "Write the CSV and validate it with the organisers' checks")
@@ -98,7 +101,8 @@ def main():
         for problem in problems:
             print("  - " + problem)
         return 1
-    print("Next: python checks/compare_with_baseline.py")
+    if config.LABELER == "v0":
+        print("Next: python checks/compare_with_baseline.py")
     return 0
 
 

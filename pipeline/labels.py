@@ -3,7 +3,7 @@
 predict(tracking) is the single entry point. It works on any Tracking object, so Attila's test
 bench can call exactly the same function on Metrica's sample match.
 
-Version v0 (this file, today): the organisers' baseline_smooth50, rebuilt on our own arrays.
+Version v0 (the functions in this file): the organisers' baseline_smooth50, rebuilt on our own arrays.
   1. Each frame where the ball is seen: the team of the nearest tracked player gets the ball.
      Ball not seen: nobody.
   2. Majority vote over +/- SMOOTH_WINDOW frames. Frames where nobody was seen in the whole
@@ -11,13 +11,16 @@ Version v0 (this file, today): the organisers' baseline_smooth50, rebuilt on our
 
 It is deliberately NOT good. Its job is to prove the pipeline end to end: if our file comes out
 identical to the official baseline_smooth50.csv, the loading and frame alignment are right.
-v1 replaces step 2 with a state machine built from Hugo and Nathan's possession rules.
+
+Version v1 lives in state_machine.py (rules 1-5 and 11). config.LABELER picks which one
+predict() runs, so going back to v0 is a one-word change.
 """
 
 import numpy as np
 
 from . import config
 from .load import HOME, AWAY
+from .state_machine import predict_v1
 
 NOBODY = -1
 CHUNK = 20000  # frames per batch in nearest_team, to keep memory use modest
@@ -74,9 +77,25 @@ def smooth_majority(codes, window):
     return labels
 
 
-def predict(tracking, window=None):
+def predict_v0(tracking, window=None):
     """One label per video frame, as a numpy array of 'H' / 'A' / 'D' / 'X'. Version v0."""
     window = config.SMOOTH_WINDOW if window is None else window
     labels = smooth_majority(nearest_team(tracking), window)
     assert len(labels) == tracking.n_frames, "one label per frame"
     return labels
+
+
+def predict(tracking, window=None, return_stats=False):
+    """The single entry point. config.LABELER chooses the version ("v0" or "v1").
+
+    window only applies to v0. With return_stats=True it returns (labels, stats), where stats
+    holds counts only (empty for v0); state_machine.describe_v1() turns them into safe text.
+    """
+    if config.LABELER == "v0":
+        labels, stats = predict_v0(tracking, window), {}
+    elif config.LABELER == "v1":
+        labels, stats = predict_v1(tracking, return_stats=True)
+    else:
+        raise ValueError("config.LABELER must be 'v0' or 'v1', got {!r}".format(config.LABELER))
+    assert len(labels) == len(tracking.ball), "one label per frame"
+    return (labels, stats) if return_stats else labels

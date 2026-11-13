@@ -26,6 +26,10 @@ OFFICIAL = os.path.join(ROOT, "evaluation", "results", "baseline_smooth50.csv")
 
 
 def main():
+    if config.LABELER != "v0":
+        print("skipped: this check compares v0 with baseline_smooth50, but config.LABELER is "
+              "{!r}. Set it to \"v0\" and rerun python run.py to repeat the check.".format(config.LABELER))
+        return 0
     for path in (config.SUBMISSION_FILE, OFFICIAL):
         if not os.path.isfile(path):
             print("missing: {}  (run python run.py first?)".format(os.path.relpath(path, ROOT)))
