@@ -12,15 +12,15 @@ Version v0 (the functions in this file): the organisers' baseline_smooth50, rebu
 It is deliberately NOT good. Its job is to prove the pipeline end to end: if our file comes out
 identical to the official baseline_smooth50.csv, the loading and frame alignment are right.
 
-Version v1 lives in state_machine.py (rules 1-5 and 11). config.LABELER picks which one
-predict() runs, so going back to v0 is a one-word change.
+Version v1 lives in state_machine.py (rules 1-5 and 11); v2 adds Fede's dead_ball.py (rules
+9, 10, 12). config.LABELER picks which one predict() runs, so going back is a one-word change.
 """
 
 import numpy as np
 
 from . import config
 from .load import HOME, AWAY
-from .state_machine import predict_v1
+from .state_machine import predict_v1, predict_v2
 
 NOBODY = -1
 CHUNK = 20000  # frames per batch in nearest_team, to keep memory use modest
@@ -86,7 +86,7 @@ def predict_v0(tracking, window=None):
 
 
 def predict(tracking, window=None, return_stats=False):
-    """The single entry point. config.LABELER chooses the version ("v0" or "v1").
+    """The single entry point. config.LABELER chooses the version ("v0", "v1" or "v2").
 
     window only applies to v0. With return_stats=True it returns (labels, stats), where stats
     holds counts only (empty for v0); state_machine.describe_v1() turns them into safe text.
@@ -95,7 +95,15 @@ def predict(tracking, window=None, return_stats=False):
         labels, stats = predict_v0(tracking, window), {}
     elif config.LABELER == "v1":
         labels, stats = predict_v1(tracking, return_stats=True)
+    elif config.LABELER == "v2":
+        labels, stats = predict_v2(tracking, return_stats=True)
+    elif config.LABELER == "v2.1":
+        labels, stats = predict_v2(tracking, return_stats=True, dead_mode="hybrid")
+    elif config.LABELER == "v2.2":
+        labels, stats = predict_v2(tracking, return_stats=True, dead_mode="hybrid",
+                                   speed_source="positions")
     else:
-        raise ValueError("config.LABELER must be 'v0' or 'v1', got {!r}".format(config.LABELER))
+        raise ValueError("config.LABELER must be 'v0', 'v1', 'v2', 'v2.1' or 'v2.2', got {!r}"
+                         .format(config.LABELER))
     assert len(labels) == len(tracking.ball), "one label per frame"
     return (labels, stats) if return_stats else labels

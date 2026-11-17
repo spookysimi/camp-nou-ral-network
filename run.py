@@ -74,6 +74,11 @@ def main():
     if stats:
         for line in state_machine.describe_v1(predicted, stats):
             print("  " + line)
+    if config.LABELER in ("v2", "v2.1"):  # v2.2 does not use the channel
+        from pipeline.dead_ball import speed_channel_check
+        agree = speed_channel_check(tracking)
+        print("  ball speed channel agrees with ball movement on {} of frames "
+              "(v2 needs this high, ~60%+)".format("n/a" if agree is None else "{:.0f}%".format(agree)))
 
     # 4. Write and validate -----------------------------------------------------------------
     step(4, "Write the CSV and validate it with the organisers' checks")

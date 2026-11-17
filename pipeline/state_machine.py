@@ -50,6 +50,7 @@ def default_params():
         "switch_max_gap": int(config.SWITCH_MAX_GAP),
         "gap_d_min_frames": int(config.GAP_D_MIN_FRAMES),
         "gap_d_margin": int(config.GAP_D_MARGIN),
+        "hybrid_gap_min_frames": int(getattr(config, "HYBRID_GAP_MIN_FRAMES", 200)),
     }
 
 
@@ -164,10 +165,14 @@ def _runs(mask):
 
 # -- rules 2-5: the state machine ---------------------------------------------------------------
 
-def run_machine(obs, start, stop, params, out, stats):
-    """Label one live stretch [start, stop) in place in `out`. Starts with no team in possession."""
+def run_machine(obs, start, stop, params, out, stats, initial=UNKNOWN):
+    """Label one live stretch [start, stop) in place in `out`.
+
+    initial: the team that restarts play (rule 10, v2), or UNKNOWN to start with no team in
+    possession (v1). A known restart team keeps the ball until the other team proves control.
+    """
     min_frames, max_gap = params["switch_min_frames"], params["switch_max_gap"]
-    current = UNKNOWN
+    current = initial
     challenger, challenge_start, challenge_count, last_evidence = UNKNOWN, 0, 0, 0
 
     for f in range(start, stop):
@@ -195,8 +200,26 @@ def run_machine(obs, start, stop, params, out, stats):
     return current
 
 
-def predict_v1(tracking, params=None, return_stats=False):
-    """Per-frame labels ("H"/"A"/"D") for every frame of the tracking."""
+def _kickoffs(halves, forced_dead):
+    """First live frame of each half: the half start, pushed past any forced-dead range."""
+    out = []
+    for start, _ in halves:
+        kick = start
+        for a, b in forced_dead:
+            if a <= kick < b:
+                kick = b
+        out.append(kick)
+    return out
+
+
+def predict_v1(tracking, params=None, return_stats=False, dead_mode="gaps", tags=None,
+               dead_ball_params=None):
+    """Per-frame labels ("H"/"A"/"D") for every frame of the tracking.
+
+    dead_mode "gaps" (v1): D = long ball-unseen stretches, fresh start after each D.
+    dead_mode "dead_ball" (v2): D = Fede's dead_ball() (ball out / still, Smart Tagging set
+    pieces and goals, fixed facts); after each D the restarting team starts with the ball.
+    """
     _check_tracking(tracking)
     params = dict(default_params(), **(params or {}))
     halves, forced_dead = match_layout(tracking)
@@ -205,14 +228,34 @@ def predict_v1(tracking, params=None, return_stats=False):
         assert 0 <= start < stop <= n, "half {}-{} outside 0-{}".format(start, stop, n)
 
     obs, nearest = frame_observations(tracking, params)
-    from_gaps = gap_dead(obs, halves, params)
-    dead = from_gaps.copy()
+    restart_team = {}
+    if dead_mode == "gaps":
+        detected = gap_dead(obs, halves, params)
+    elif dead_mode in ("dead_ball", "hybrid"):
+        from .dead_ball import dead_ball
+        detected, restarts = dead_ball(tracking, tags, fixed_dead=forced_dead,
+                                       kickoffs=_kickoffs(halves, forced_dead),
+                                       params=dead_ball_params)
+        assert detected.shape == (n,), "dead_ball returned {} frames, expected {}".format(
+            detected.shape, n)
+        if dead_mode == "hybrid":
+            # v2.1: also dead when the ball is missing for a LONG time (real stoppages last
+            # longer than duels and crowded boxes, where the tracking loses the ball briefly).
+            long_gaps = dict(params, gap_d_min_frames=params["hybrid_gap_min_frames"])
+            detected = detected | gap_dead(obs, halves, long_gaps)
+        restart_team = {frame: {"H": HOME, "A": AWAY}[team]
+                        for frame, team in restarts if team in ("H", "A")}
+    else:
+        raise ValueError("dead_mode must be 'gaps', 'dead_ball' or 'hybrid', got {!r}".format(
+            dead_mode))
+    dead = detected.copy()
     for start, stop in forced_dead:
         dead[start:stop] = True
 
     codes = np.full(n, DEAD, dtype=np.int8)               # outside the halves: D (not graded)
-    stats = {"switches": 0, "live_stretches": 0, "fallback_stretches": 0, "fallback_frames": 0,
-             "dead_from_gaps": int(from_gaps.sum()),
+    stats = {"dead_mode": dead_mode, "switches": 0, "live_stretches": 0, "fallback_stretches": 0,
+             "fallback_frames": 0, "restart_team_used": 0,
+             "dead_from_gaps": int(detected.sum()),       # name kept from v1: detected D frames
              "dead_forced": int(sum(b - a for a, b in forced_dead))}
 
     for h_start, h_stop in halves:
@@ -220,7 +263,9 @@ def predict_v1(tracking, params=None, return_stats=False):
         for s, e in _runs(live):
             start, stop = h_start + s, h_start + e
             stats["live_stretches"] += 1
-            if run_machine(obs, start, stop, params, codes, stats) == UNKNOWN:
+            initial = restart_team.get(start, UNKNOWN)
+            stats["restart_team_used"] += int(initial != UNKNOWN)
+            if run_machine(obs, start, stop, params, codes, stats, initial) == UNKNOWN:
                 # Nobody ever proved control here: fall back to the team most often nearest.
                 stats["fallback_stretches"] += 1
                 stats["fallback_frames"] += stop - start
@@ -236,6 +281,21 @@ def predict_v1(tracking, params=None, return_stats=False):
     return (labels, stats) if return_stats else labels
 
 
+def predict_v2(tracking, params=None, return_stats=False, dead_mode="dead_ball",
+               speed_source="channel"):
+    """v2 = the v1 state machine + Fede's dead-ball detector (pipeline/dead_ball.py).
+
+    Smart Tagging comes from tracking.tags if the object carries it (Attila's test bench can fake
+    it), otherwise, for our match only, from the organisers' loader.
+    """
+    tags = getattr(tracking, "tags", None)
+    if tags is None and len(tracking.ball) == BAR_ATH_FRAMES:
+        from .dead_ball import load_match_tags
+        tags = load_match_tags()
+    return predict_v1(tracking, params, return_stats, dead_mode=dead_mode, tags=tags,
+                      dead_ball_params={"speed_source": speed_source})
+
+
 # -- safe summary --------------------------------------------------------------------------------
 
 def describe_v1(labels, stats, halves=None, fps=25):
@@ -243,12 +303,15 @@ def describe_v1(labels, stats, halves=None, fps=25):
 
     Per-half possession lines only when `halves` is given (run.py has its own per-half table).
     """
-    lines = ["v1 machine: {} switches, {} live stretches, {} fallback stretches ({} frames)".format(
+    lines = ["machine: {} switches, {} live stretches, {} fallback stretches ({} frames)".format(
         stats["switches"], stats["live_stretches"], stats["fallback_stretches"], stats["fallback_frames"]),
-        "v1 dead: {} frames from long ball gaps, {} forced (pre-kickoff)".format(
-            stats["dead_from_gaps"], stats["dead_forced"])]
+        "dead ({}): {} frames detected, {} forced (pre-kickoff); {} live stretches started "
+        "with the restart team".format(
+            {"gaps": "long ball gaps", "dead_ball": "dead_ball.py",
+             "hybrid": "dead_ball.py + 8 s ball gaps"}[stats.get("dead_mode", "gaps")],
+            stats["dead_from_gaps"], stats["dead_forced"], stats.get("restart_team_used", 0))]
     total = sum(stats["observations"].values())
-    lines.append("v1 per-frame observations: " + ", ".join(
+    lines.append("per-frame observations: " + ", ".join(
         "{} {:.1f}%".format(k, 100.0 * v / total) for k, v in stats["observations"].items()))
     for number, (start, stop) in enumerate(halves or [], 1):
         half = labels[start:stop]

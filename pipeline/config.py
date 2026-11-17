@@ -37,7 +37,8 @@ SMOOTH_WINDOW = 50
 # number -> log it in the Decision Log.
 
 # Which labeller predict() uses: "v0" = nearest player + majority vote (the baseline),
-# "v1" = the state machine below. Keeping v0 one switch away lets us compare and roll back.
+# "v1" = the state machine below, "v2" = v1 + Fede's dead-ball detector (pipeline/dead_ball.py,
+# its numbers are in PARAMS there). Keeping older versions one switch away lets us roll back.
 LABELER = "v1"
 
 # Rule 1 - control. A team "controls" the ball on a frame when one of its players is within
@@ -64,6 +65,14 @@ SWITCH_MAX_GAP = 10
 # Fede's dead_ball() replaces this in v2.
 GAP_D_MIN_FRAMES = 101
 GAP_D_MARGIN = 50
+
+# v2.1 = Fede's dead_ball.py PLUS "ball missing for 8+ s = dead" (instead of v1's 4 s). Real
+# stoppages (throw-ins, free kicks, goal kicks, corners) almost always last longer than 8 s; the
+# shorter losses are mostly duels and crowded boxes, where play goes on. Football logic, not tuned.
+HYBRID_GAP_MIN_FRAMES = 200
+# v2.2 = v2.1, but "ball still" and "kick" use speed computed from the ball's positions
+# (pipeline/dead_ball.py, speed_source="positions"), because the 3rd ball channel agreed with
+# real ball movement on only 33% of frames.
 
 # Rule 11 - the 2nd half is graded from frame 110,808 but kicks off at 113,742 (published in
 # DATA.md, FAQ.md and starter/load_smart_tagging.py). Everything before the kickoff is D.
